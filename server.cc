@@ -168,10 +168,8 @@ private:
 		std::string rpage = req->getvars["follow_page"];
 		if (rpage.empty())
 			rpage = req->postvars["follow_page"];
-		if (rpage.empty())
-			rpage = "/";    // Make sure we never return empty location, default to index
 
-		if (req->uri == "/auth") {
+		if (ends_with(req->uri, "/auth")) {
 			// Read cookie and validate the authorization
 			bool authed = check_cookie(req->cookies["authentication-token"], wcfg, req->uri);
 			logger->log("Requested auth with result: " + std::to_string(authed));
@@ -182,7 +180,10 @@ private:
 				return "Status: 401\r\nContent-Type: text/plain\r\n"
 				       "Content-Length: 21\r\n\r\nAuthentication Denied";
 		}
-		else if (req->uri == "/login") {
+		else if (ends_with(req->uri, "/login")) {
+			if (rpage.empty())
+				rpage = req->uri.substr(0, req->uri.length() - 5);
+
 			// Die hard if someone's bruteforcing this
 			if (rl->check(req->ip64)) {
 				logger->log("Rate limit hit for ip id " + std::to_string(req->ip64));
@@ -244,11 +245,14 @@ private:
 					   "Content-Length: " + std::to_string(page.size()) + "\r\n\r\n" + page;
 			}
 		}
-		else if (req->uri == "/logout") {
+		else if (ends_with(req->uri, "/logout")) {
+			if (rpage.empty())
+				rpage = req->uri.substr(0, req->uri.length() - 6) + "login";
+
 			logger->log("Logout requested");
 			// Just redirect to the page (if present, otherwise login) deleting cookie
 			return "Status: 302\r\nSet-Cookie: authentication-token=null\r\n"
-				   "Location: /login\r\n\r\n";
+				   "Location: " + stripnl(rpage) + "\r\n\r\n";
 		}
 		logger->log("Unknown request for URL: " + req->uri);
 		return "Status: 404\r\nContent-Type: text/plain\r\n"
