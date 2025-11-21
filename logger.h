@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <unistd.h>
 #include <fcntl.h>
+#include <iostream>
 
 static time_t last_midnight() {
 	time_t t = time(NULL);
@@ -32,6 +33,10 @@ class Logger {
 public:
 	Logger(std::string logfile)
 	 : logfile(logfile) {
+		if (logfile.empty()) {
+			return;
+		}
+
 		// Create/append first log file
 		rotatelog();
 
@@ -40,6 +45,10 @@ public:
 	}
 
 	~Logger() {
+		if (logfile.empty()) {
+			return;
+		}
+
 		// Set end and wake flush thread
 		{
 			std::unique_lock<std::mutex> lock(waitmu);
@@ -52,6 +61,11 @@ public:
 	}
 
 	void log(std::string line) {
+		if (logfile.empty()) {
+            std::cout << logts() << " " << line << std::endl;
+            return;
+        }
+
 		// Add line to memory buffer
 		std::lock_guard<std::mutex> guard(mu);
 		logbuffer += logts() + " " + line + "\n";
