@@ -58,11 +58,14 @@ int nthreads = 4;
 typedef std::unordered_map<std::string, std::string> StrMap;
 
 struct cred_t {
-	std::string password, totp;  // Pass and TOTP (binary)
-	unsigned sduration;          // Duration of a valid session (seconds)
-	unsigned digits;             // Digits of TOTP
-	unsigned period;             // Period of TOTP
-	htAlgo algorithm;            // TOTP hashing algorithm
+	std::string username;  // Username
+	std::string password;  // Password
+	std::string totp;      // TOTP (binary)
+	unsigned sduration;    // Duration of a valid session (seconds)
+	unsigned digits;       // Digits of TOTP
+	unsigned period;       // Period of TOTP
+	htAlgo algorithm;      // TOTP hashing algorithm
+	std::string path;      // Path
 };
 
 struct web_t {
@@ -70,7 +73,7 @@ struct web_t {
 	unsigned totp_generations;    // 0 means only current code is valid,
 	                              // 1 means previous and next code is also valid
 	                              // 2 means the 2 previous and next codes are also valid, etc
-	std::unordered_map<std::string, cred_t> users;  // User to credential
+	std::unordered_map<std::string, std::vector<cred_t>> users;  // User to credential
 };
 
 std::unordered_map<std::string, web_t> webcfg;   // Hostname -> Config
@@ -101,13 +104,13 @@ private:
 	// Signal end of workers
 	bool end;
 
-	std::string create_cookie(std::string user) {
-		std::string payload = std::to_string(time(0)) + ":" + hexencode(user);
+	std::string create_cookie(std::string user, std::string path = "/") {
+		std::string payload = std::to_string(time(0)) + ":" + hexencode(path + ":" + user);
 		return payload + ":" + hexencode(hmac_sha1(this->cookie_secret, payload));
 	}
 
 	// Returns true if the cookie is good.
-	bool check_cookie(std::string cookie, const web_t *wcfg) {
+	bool check_cookie(std::string cookie, const web_t *wcfg, const std::string& path) {
 		// The cookie format is something like:
 		// etime:hex(user):hex(hmac)
 		auto p1 = cookie.find(':');
@@ -117,16 +120,45 @@ private:
 		if (p2 == std::string::npos)
 			return false;
 		std::string c1 = cookie.substr(0, p1);
-		std::string user = hexdecode(cookie.substr(p1+1, p2-p1-1));
+		std::string path_user = hexdecode(cookie.substr(p1+1, p2-p1-1));
 		std::string hmac = hexdecode(cookie.substr(p2+1));
 		uint64_t ets = atol(c1.c_str());
-		// Lookup by username
-		if (!wcfg->users.count(user))
+
+		std::string user = path_user;
+		std::string user_path = "/";
+
+		size_t colon_pos = path_user.find(':');
+		if (colon_pos != std::string::npos) {
+			user_path = path_user.substr(0, colon_pos);
+			user = path_user.substr(colon_pos + 1);
+		}
+
+		if (path.substr(0, user_path.length()) != user_path) {
 			return false;
-		unsigned duration = wcfg->users.at(user).sduration;
-		// Not valid if the cookie is too old
-		if ((unsigned)time(0) > ets + duration)
-			return false;
+		}
+
+		std::vector<cred_t> *users = nullptr;
+
+		// First check the path from cookie (the path where user logged in)
+		if (wcfg->users.count(user_path)) {
+			users = const_cast<std::vector<cred_t>*>(&wcfg->users.at(user_path));
+		}
+
+		if (!users) return false;
+
+		bool user_found = false;
+		for (const auto& user_cred : *users) {
+			if (user == user_cred.username) {
+				unsigned duration = user_cred.sduration;
+				if ((unsigned)time(0) > ets + duration)
+					return false;
+				user_found = true;
+				break;
+			}
+		}
+
+		if (!user_found) return false;
+
 		// Finally check the HMAC with the secret to ensure the cookie is valid
 		std::string hmac_calc = hmac_sha1(this->cookie_secret, cookie.substr(0, p2));
 		return (hmac == hmac_calc);
@@ -141,7 +173,7 @@ private:
 
 		if (req->uri == "/auth") {
 			// Read cookie and validate the authorization
-			bool authed = check_cookie(req->cookies["authentication-token"], wcfg);
+			bool authed = check_cookie(req->cookies["authentication-token"], wcfg, req->uri);
 			logger->log("Requested auth with result: " + std::to_string(authed));
 			if (authed)
 				return "Status: 200\r\nContent-Type: text/plain\r\n"
@@ -164,23 +196,42 @@ private:
 				std::string user = req->postvars["username"];
 				std::string pass = req->postvars["password"];
 				unsigned    totp = atoi(req->postvars["totp"].c_str());
+				
+				std::vector<cred_t> *users = nullptr;
 
-				// Validate the authentication to issue a cookie or throw an error
-				if (wcfg->users.count(user) &&
-				    wcfg->users.at(user).password == pass &&
-				    totp_valid(wcfg->users.at(user), totp, wcfg->totp_generations)) {
-
-					logger->log("Login successful for user " + user);
-
-					// Render a redirect page to the redirect address (+cookie)
-					std::string token = create_cookie(user);
-					return "Status: 302\r\nSet-Cookie: authentication-token=" + token +
-					       "\r\nLocation: " + stripnl(rpage) + "\r\n\r\n";
+				if (wcfg->users.count(req->uri)) {
+					users = const_cast<std::vector<cred_t>*>(&wcfg->users.at(req->uri));
 				}
 				else {
-					logger->log("Failed login for user " + user);
-					lerror = true;   // Render login page with err message
+					for (const auto& path_users : wcfg->users) {
+						if (req->uri.substr(0, path_users.first.length()) == path_users.first) {
+							users = const_cast<std::vector<cred_t>*>(&path_users.second);
+							break;
+						}
+					}
 				}
+
+				if (!users && wcfg->users.count("/")) {
+					users = const_cast<std::vector<cred_t>*>(&wcfg->users.at("/"));
+				}
+
+				if (users) {
+					for (const auto& user_cred : *users) {
+						if (user_cred.password == pass &&
+							totp_valid(user_cred, totp, wcfg->totp_generations)) {
+
+							logger->log("Login successful for user " + user + " on path " + req->uri);
+
+							// Render a redirect page to the redirect address (+cookie)
+							std::string token = create_cookie(user, user_cred.path);
+							return "Status: 302\r\nSet-Cookie: authentication-token=" + token +
+								   "\r\nLocation: " + stripnl(rpage) + "\r\n\r\n";
+						}
+					}
+				}
+
+				logger->log("Failed login for user " + user + " on path " + req->uri);
+				lerror = true;   // Render login page with err message
 			}
 
 			// Just renders the login page
@@ -377,6 +428,7 @@ int main(int argc, char **argv) {
 
 		for (int j = 0; j < config_setting_length(users_cfg); j++) {
 			config_setting_t *userentry = config_setting_get_elem(users_cfg, j);
+			config_setting_t *path = config_setting_get_member(userentry, "path");
 			config_setting_t *user = config_setting_get_member(userentry, "username");
 			config_setting_t *pass = config_setting_get_member(userentry, "password");
 			config_setting_t *totp = config_setting_get_member(userentry, "totp");
@@ -398,13 +450,24 @@ int main(int argc, char **argv) {
 			if (!algnames.count(algorithm))
 				RET_ERR("invalid algorithm specified");
 
-			wentry.users[config_setting_get_string(user)] = cred_t {
+			std::string user_path = "/";
+			if (path) {
+				user_path = config_setting_get_string(path);
+				if (user_path.empty()) user_path = "/";
+			}
+			
+			cred_t cred = {
+				.username = config_setting_get_string(user),
 				.password = config_setting_get_string(pass),
 				.totp = b32dec(b32pad(config_setting_get_string(totp))),
 				.sduration = (unsigned)config_setting_get_int(durt),
 				.digits = (unsigned)digits,
 				.period = (unsigned)period,
-				algnames.at(algorithm) };
+				.algorithm = algnames.at(algorithm),
+				.path = user_path
+			};
+
+			wentry.users[user_path].push_back(cred);
 		}
 
 		webcfg[config_setting_get_string(hostname)] = wentry;
@@ -447,5 +510,4 @@ int main(int argc, char **argv) {
 
 	std::cerr << "All clear, service is down" << std::endl;
 }
-
 
