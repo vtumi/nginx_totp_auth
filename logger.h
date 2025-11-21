@@ -24,8 +24,8 @@ static std::string logts(bool date = false) {
 
 	const std::time_t t = std::chrono::system_clock::to_time_t(tp);
 	std::tm utctm;
-	gmtime_r(&t, &utctm);
-	std::strftime(fmtime, sizeof(fmtime), date ? "%Y%m%d" : "%Y%m%d-%H%M%S", &utctm);
+	localtime_r(&t, &utctm);
+	std::strftime(fmtime, sizeof(fmtime), date ? "%Y-%m-%d" : "%Y-%m-%d %H:%M:%S", &utctm);
 	return fmtime;
 }
 
