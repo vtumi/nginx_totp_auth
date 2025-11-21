@@ -155,4 +155,8 @@ static std::string stripnl(const std::string &s) {
 	return ret;
 }
 
+bool ends_with(std::string const &str, std::string const &suffix) {
+    return str.size() >= suffix.size() && str.compare(str.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
 
