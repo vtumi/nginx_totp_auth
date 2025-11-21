@@ -350,9 +350,9 @@ int main(int argc, char **argv) {
 	if (!config_lookup_string(&cfg, "secret", &secret))
 		RET_ERR("'secret' missing, this field is required");
 	// Secret holds the server secret used to create cookies
-	const char *logpath = "/tmp/totp_auth";
+	const char *logpath = "";
 	if (!config_lookup_string(&cfg, "log-path", &logpath))
-		std::cerr << "'log-path' not specified, using default /tmp/totp_auth path" << std::endl;
+		std::cerr << "'log-path' not specified" << std::endl;
 
 	config_setting_t *webs_cfg = config_lookup(&cfg, "webs");
 	if (!webs_cfg)
